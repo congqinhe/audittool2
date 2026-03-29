@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { ChevronLeft, FileText, AlertTriangle, CheckCircle2, Info, Search, LayoutTemplate, ChevronUp, ChevronDown, Download, ThumbsUp, ThumbsDown, ScanSearch } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -7,6 +7,46 @@ import { exportElementToSvg } from '../utils/exportSvg';
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+/** 结构化卡片右上角审核状态：固定为徽章样式，与可点击操作按钮区分 */
+function StructuredReviewStatusBadge(props: {
+  ignored?: boolean;
+  isAccepted?: boolean;
+  acceptedAfterEdit?: boolean;
+}) {
+  const { ignored, isAccepted, acceptedAfterEdit } = props;
+  let label: string;
+  let tone: 'pending' | 'adopted' | 'ignored';
+  if (ignored) {
+    label = '已忽略';
+    tone = 'ignored';
+  } else if (isAccepted) {
+    label = acceptedAfterEdit ? '已确认' : '已采纳';
+    tone = 'adopted';
+  } else {
+    label = '待处理';
+    tone = 'pending';
+  }
+  return (
+    <span
+      role="status"
+      aria-label={`审核状态：${label}`}
+      className={cn(
+        'inline-flex items-center min-h-[1.5rem] px-2 py-0.5 rounded-md text-xs font-semibold tracking-tight leading-none shrink-0 select-none',
+        tone === 'pending' && 'bg-amber-100 text-amber-950',
+        tone === 'adopted' && 'bg-emerald-100 text-emerald-950',
+        tone === 'ignored' && 'bg-surface-200 text-surface-700'
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
+const structuredActionBtn =
+  'px-2 py-1 text-xs font-medium rounded-md border border-surface-300 bg-white text-surface-700 hover:bg-surface-50 transition-colors';
+const structuredPrimaryActionBtn =
+  'px-2 py-1 text-xs font-medium rounded-md border border-emerald-300 bg-white text-emerald-700 hover:bg-emerald-50/80 transition-colors';
 
 type RiskCategory = 'trigger' | 'missing' | 'low';
 
@@ -54,6 +94,8 @@ export interface RiskItem {
   isAccepted?: boolean;
   /** 为 true 表示用户曾在编辑后点击「确认」（与「采纳」提交效果一致，仅文案区分） */
   acceptedAfterEdit?: boolean;
+  /** 用户点击「忽略」：全盘不接受本条，与采纳/确认互斥 */
+  ignored?: boolean;
   /** 仅识别：赞/踩反馈，不参与 BPM 结构化回传 */
   recognitionFeedback?: 'up' | 'down' | null;
   structuredFields: StructuredField[];
@@ -75,6 +117,19 @@ function collectReferencedLocationIds(items: RiskItem[]): Set<string> {
     });
   }
   return s;
+}
+
+/** 进入页左右 5.5 : 4.5（左合同 : 右审核），右栏占可用宽度 4.5/10 = 45% */
+const RIGHT_PANEL_FRACTION = 4.5 / (5.5 + 4.5);
+
+function getInitialRightPanelWidth(): number {
+  const clamp = (raw: number) => Math.max(320, Math.min(799, Math.round(raw)));
+  if (typeof window === 'undefined') {
+    return clamp(1280 * RIGHT_PANEL_FRACTION);
+  }
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const dragPx = 4;
+  return clamp((vw - dragPx) * RIGHT_PANEL_FRACTION);
 }
 
 function ReviewerPage() {
@@ -262,7 +317,7 @@ function ReviewerPage() {
   };
 
   const isReviewDirty = (item: RiskItem): boolean => {
-    if (item.ruleMode !== 'bpm_structured') return false;
+    if (item.ruleMode !== 'bpm_structured' || item.ignored) return false;
     ensureReviewBaseline(item);
     const b = reviewBaselinesRef.current[item.id]!;
     if (getMergedConclusionText(item) !== b.mergedConclusion) return true;
@@ -278,7 +333,7 @@ function ReviewerPage() {
 
   const handleAcceptRisk = (itemId: string) => {
     const item = riskItems.find((r) => r.id === itemId);
-    if (!item || item.ruleMode !== 'bpm_structured') return;
+    if (!item || item.ruleMode !== 'bpm_structured' || item.ignored) return;
 
     const wasDirty = isReviewDirty(item);
     const merged = getMergedConclusionText(item).trim();
@@ -292,6 +347,7 @@ function ReviewerPage() {
         risk.id === itemId
           ? {
               ...risk,
+              ignored: false,
               isAccepted: true,
               acceptedAfterEdit: wasDirty,
               structuredFields: risk.structuredFields.map((field) => ({ ...field, confirmed: true })),
@@ -301,7 +357,25 @@ function ReviewerPage() {
     );
   };
 
+  /** 忽略：清掉采纳/确认，进入 ignored；不改动结论文案与要点内容 */
   const handleIgnoreRisk = (riskId: string) => {
+    setRiskItems((prev) =>
+      prev.map((risk) =>
+        risk.id === riskId && risk.ruleMode === 'bpm_structured'
+          ? {
+              ...risk,
+              ignored: true,
+              isAccepted: false,
+              acceptedAfterEdit: false,
+              structuredFields: risk.structuredFields.map((field) => ({ ...field, confirmed: false })),
+            }
+          : risk
+      )
+    );
+  };
+
+  /** 取消确认/采纳：回到 pending，保留当前结论文案与要点（不重置基线、不还原 AI 初值） */
+  const handleCancelAccept = (riskId: string) => {
     setRiskItems((prev) =>
       prev.map((risk) =>
         risk.id === riskId && risk.ruleMode === 'bpm_structured'
@@ -312,6 +386,14 @@ function ReviewerPage() {
               structuredFields: risk.structuredFields.map((field) => ({ ...field, confirmed: false })),
             }
           : risk
+      )
+    );
+  };
+
+  const handleCancelIgnore = (riskId: string) => {
+    setRiskItems((prev) =>
+      prev.map((risk) =>
+        risk.id === riskId && risk.ruleMode === 'bpm_structured' ? { ...risk, ignored: false } : risk
       )
     );
   };
@@ -328,7 +410,7 @@ function ReviewerPage() {
 
   const handleSubmit = () => {
     const structuredRisks = riskItems.filter((r) => r.ruleMode === 'bpm_structured');
-    const accepted = structuredRisks.filter((risk) => risk.isAccepted);
+    const accepted = structuredRisks.filter((risk) => risk.isAccepted && !risk.ignored);
     const confirmedFields = structuredRisks.flatMap((risk) =>
       risk.structuredFields
         .filter((field) => field.confirmed)
@@ -355,8 +437,8 @@ function ReviewerPage() {
     // setOpinionText('');
   };
 
-  // 拖动侧边栏状态
-  const [rightPanelWidth, setRightPanelWidth] = useState(480);
+  // 拖动侧边栏状态（初始约 1:1 分栏）
+  const [rightPanelWidth, setRightPanelWidth] = useState(getInitialRightPanelWidth);
   const isResizing = useRef(false);
 
   useEffect(() => {
@@ -424,6 +506,19 @@ function ReviewerPage() {
     });
   }, [riskItems]);
 
+  type OverviewSegment = 'trigger' | 'missing' | 'low' | 'recognition_only';
+
+  /** 当前定位对应的概览分类（用于胶囊选中态，与左侧/卡片联动） */
+  const selectedOverviewSegment = useMemo((): OverviewSegment | null => {
+    if (!activeRiskId) return null;
+    const item = sortedRiskItems.find(
+      (i) => i.id === activeRiskId || i.recognitionClauses?.some((c) => c.locationId === activeRiskId)
+    );
+    if (!item) return null;
+    if (item.ruleMode === 'recognition_only') return 'recognition_only';
+    return item.category;
+  }, [activeRiskId, sortedRiskItems]);
+
   /** 点击统计区：滚动右侧列表到该类型第一条卡片（与列表排序一致） */
   const scrollToFirstCardOfSegment = (segment: 'trigger' | 'missing' | 'low' | 'recognition_only') => {
     const first = sortedRiskItems.find((item) => {
@@ -439,6 +534,45 @@ function ReviewerPage() {
       });
     });
   };
+
+  /** 在「待处理」结构化卡片中顺序跳转（与列表排序一致）；当前不在列表中时从下一条视为第一条 */
+  const scrollToNextPending = useCallback(() => {
+    const pending = sortedRiskItems.filter(
+      (item) => item.ruleMode === 'bpm_structured' && !item.isAccepted && !item.ignored
+    );
+    if (pending.length === 0) return;
+    const ids = pending.map((item) => item.id);
+    const idx = ids.indexOf(activeRiskId ?? '');
+    const nextIdx = idx === -1 ? 0 : (idx + 1) % ids.length;
+    const id = ids[nextIdx]!;
+    setActiveRiskId(id);
+    requestAnimationFrame(() => {
+      document.getElementById(`risk-card-${id}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    });
+  }, [sortedRiskItems, activeRiskId]);
+
+  /** 定位到第一条「已处理」或「已忽略」结构化卡片（与列表排序一致） */
+  const scrollToFirstStructuredReviewState = useCallback(
+    (kind: 'resolved' | 'ignored') => {
+      const first = sortedRiskItems.find((item) => {
+        if (item.ruleMode !== 'bpm_structured') return false;
+        if (kind === 'resolved') return !!item.isAccepted && !item.ignored;
+        return !!item.ignored;
+      });
+      if (!first) return;
+      setActiveRiskId(first.id);
+      requestAnimationFrame(() => {
+        document.getElementById(`risk-card-${first.id}`)?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        });
+      });
+    },
+    [sortedRiskItems]
+  );
 
   // 定位到对应的风险原文
   const scrollToRisk = (riskId: string) => {
@@ -683,104 +817,174 @@ function ReviewerPage() {
           </div>
         </div>
 
-        {/* 右侧区域：智能审核辅助与操作区 */}
+        {/* 右侧区域：吸顶「智能审核结果」+ 风险类型 / 仅识别导航，下列表可滚动 */}
         <section 
-          className="bg-white flex flex-col shrink-0 shadow-[-4px_0_24px_-8px_rgba(0,0,0,0.05)] z-20 relative"
+          className="bg-white flex flex-col shrink-0 min-h-0 shadow-[-4px_0_24px_-8px_rgba(0,0,0,0.05)] z-20 relative"
           style={{ width: rightPanelWidth }}
         >
-          
-          {/* Header */}
-          <div className="p-5 border-b border-surface-100 shrink-0">
-            <h2 className="text-lg font-bold text-surface-900 flex items-center gap-2">
-              <span className="bg-clip-text text-transparent bg-gradient-to-r from-primary-600 to-blue-600">智能审核辅助</span>
-              <span className="text-xs font-normal px-2 py-0.5 bg-primary-50 text-primary-700 rounded-full border border-primary-100">AI V1.3</span>
-            </h2>
-            <p className="text-sm text-surface-500 mt-1">已自动过滤与【财务部】相关的评审规则</p>
-          </div>
-
-          <div className="flex-1 overflow-y-auto relative" ref={rightScrollRef}>
-            {/* 风险点列表 */}
-            <div className="p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-semibold text-surface-900 flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-primary-600" />
-                  规则评审结果
-                </h3>
-                
-                {/* 风险概览：仅统计需 BPM 结构化回传的项 */}
-                <div className="flex flex-wrap items-center gap-1.5 text-xs font-medium bg-surface-100 p-1 rounded-full border border-surface-200">
-                  {(() => {
-                    const nTrigger = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'trigger').length;
-                    const nMissing = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'missing').length;
-                    const nLow = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'low').length;
-                    const nRec = riskItems.filter((item) => item.ruleMode === 'recognition_only').length;
-                    const chipBtn =
-                      'rounded-full flex items-center gap-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 focus-visible:ring-offset-1';
-                    return (
-                      <>
+          <div className="flex-1 overflow-y-auto relative min-h-0" ref={rightScrollRef}>
+            <div
+              className={cn(
+                'sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 px-5 py-3.5',
+                'border-b border-surface-100 bg-white/95 backdrop-blur-sm supports-[backdrop-filter]:bg-white/90'
+              )}
+            >
+              <h2 className="text-lg font-bold text-surface-900 flex items-center min-w-0 shrink-0">
+                <span className="bg-clip-text text-transparent bg-gradient-to-r from-primary-600 to-blue-600">
+                  智能审核结果
+                </span>
+              </h2>
+              {/* 处理进度 + 风险概览：均仅统计/跳转「评审结果」结构化项；仅识别见右侧胶囊 */}
+              <div className="flex flex-wrap items-center justify-end gap-1.5 text-xs font-medium bg-surface-100 p-1 rounded-full border border-surface-200">
+                {(() => {
+                  const structured = riskItems.filter((item) => item.ruleMode === 'bpm_structured');
+                  const nPending = structured.filter((item) => !item.isAccepted && !item.ignored).length;
+                  const nResolved = structured.filter((item) => item.isAccepted && !item.ignored).length;
+                  const nIgnored = structured.filter((item) => item.ignored).length;
+                  const nTrigger = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'trigger').length;
+                  const nMissing = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'missing').length;
+                  const nLow = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'low').length;
+                  const nRec = riskItems.filter((item) => item.ruleMode === 'recognition_only').length;
+                  const chipBtn =
+                    'rounded-full flex items-center gap-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 focus-visible:ring-offset-1';
+                  const chipSelected = 'bg-white shadow-sm ring-1 ring-black/[0.06]';
+                  const statBase =
+                    'rounded-full flex items-center gap-1 px-2 py-0.5 tabular-nums leading-none shrink-0';
+                  const statBtn =
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 focus-visible:ring-offset-1';
+                  return (
+                    <>
+                      <div
+                        className={cn(
+                          statBase,
+                          'pl-2 pr-0.5 gap-0.5 bg-white/75 text-orange-900 ring-1 ring-orange-200/45 shadow-[0_1px_0_rgba(0,0,0,0.03)]'
+                        )}
+                        title="待处理：未采纳/确认且未忽略（评审结果）"
+                      >
+                        <span className="text-[11px] font-medium text-orange-800/90 tracking-tight">待处理</span>
+                        <span className="min-w-[1.1ch] text-center text-xs font-semibold">{nPending}</span>
                         <button
                           type="button"
-                          disabled={nTrigger === 0}
-                          title="定位到第一条触发风险"
-                          onClick={() => scrollToFirstCardOfSegment('trigger')}
+                          disabled={nPending === 0}
+                          onClick={scrollToNextPending}
                           className={cn(
-                            chipBtn,
-                            'px-2 py-0.5 bg-white text-risk-high shadow-sm',
-                            nTrigger === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-50 cursor-pointer'
+                            'p-0.5 rounded-full transition-colors',
+                            nPending === 0
+                              ? 'opacity-40 cursor-not-allowed'
+                              : 'text-orange-800 hover:bg-orange-100/80 cursor-pointer'
                           )}
+                          title="下一条待处理"
+                          aria-label="下一条待处理"
                         >
-                          <span className="w-1.5 h-1.5 rounded-full bg-risk-high shrink-0" />
-                          {nTrigger}
+                          <ChevronDown className="w-3.5 h-3.5 shrink-0 opacity-90" strokeWidth={2.25} />
                         </button>
-                        <button
-                          type="button"
-                          disabled={nMissing === 0}
-                          title="定位到第一条信息缺失"
-                          onClick={() => scrollToFirstCardOfSegment('missing')}
-                          className={cn(
-                            chipBtn,
-                            'px-2 py-0.5 text-risk-medium',
-                            nMissing === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-amber-50 cursor-pointer'
-                          )}
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-risk-medium shrink-0" />
-                          {nMissing}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={nLow === 0}
-                          title="定位到第一条低风险"
-                          onClick={() => scrollToFirstCardOfSegment('low')}
-                          className={cn(
-                            chipBtn,
-                            'px-2 py-0.5 text-risk-low',
-                            nLow === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-emerald-50 cursor-pointer'
-                          )}
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-risk-low shrink-0" />
-                          {nLow}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={nRec === 0}
-                          title="定位到第一条仅识别"
-                          onClick={() => scrollToFirstCardOfSegment('recognition_only')}
-                          className={cn(
-                            chipBtn,
-                            'px-2 py-0.5 text-slate-600 border-l border-surface-200 pl-2 ml-0.5',
-                            nRec === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-100 cursor-pointer'
-                          )}
-                        >
-                          <ScanSearch className="w-3 h-3 shrink-0" /> 仅识别 {nRec}
-                        </button>
-                      </>
-                    );
-                  })()}
-                </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={nResolved === 0}
+                        onClick={() => scrollToFirstStructuredReviewState('resolved')}
+                        className={cn(
+                          statBase,
+                          statBtn,
+                          'bg-white/55 text-emerald-900 ring-1 ring-emerald-200/40 shadow-[0_1px_0_rgba(0,0,0,0.02)]',
+                          nResolved === 0
+                            ? 'opacity-40 cursor-not-allowed'
+                            : 'hover:bg-emerald-50/90 cursor-pointer'
+                        )}
+                        title="已处理：已采纳/确认且未忽略，点击定位第一条"
+                        aria-label="定位到第一条已处理"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                        <span className="text-[11px] font-medium text-emerald-800/88 tracking-tight">已处理</span>
+                        <span className="text-xs font-semibold">{nResolved}</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={nIgnored === 0}
+                        onClick={() => scrollToFirstStructuredReviewState('ignored')}
+                        className={cn(
+                          statBase,
+                          statBtn,
+                          'bg-white/50 text-surface-700 ring-1 ring-surface-200/80',
+                          nIgnored === 0
+                            ? 'opacity-40 cursor-not-allowed'
+                            : 'hover:bg-surface-100/90 cursor-pointer'
+                        )}
+                        title="已忽略，点击定位第一条"
+                        aria-label="定位到第一条已忽略"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-surface-400 shrink-0" />
+                        <span className="text-[11px] font-medium text-surface-600 tracking-tight">已忽略</span>
+                        <span className="text-xs font-semibold text-surface-800">{nIgnored}</span>
+                      </button>
+                      <div className="w-px h-4 bg-surface-300/65 shrink-0 self-center mx-0.5" aria-hidden />
+                      <button
+                        type="button"
+                        disabled={nTrigger === 0}
+                        title="定位到第一条触发风险"
+                        onClick={() => scrollToFirstCardOfSegment('trigger')}
+                        className={cn(
+                          chipBtn,
+                          'px-2 py-0.5 text-risk-high',
+                          selectedOverviewSegment === 'trigger' ? chipSelected : 'hover:bg-red-50/90',
+                          nTrigger === 0 && 'opacity-40 cursor-not-allowed'
+                        )}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-risk-high shrink-0" />
+                        {nTrigger}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={nMissing === 0}
+                        title="定位到第一条信息缺失"
+                        onClick={() => scrollToFirstCardOfSegment('missing')}
+                        className={cn(
+                          chipBtn,
+                          'px-2 py-0.5 text-risk-medium',
+                          selectedOverviewSegment === 'missing' ? chipSelected : 'hover:bg-amber-50/90',
+                          nMissing === 0 && 'opacity-40 cursor-not-allowed'
+                        )}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-risk-medium shrink-0" />
+                        {nMissing}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={nLow === 0}
+                        title="定位到第一条低风险"
+                        onClick={() => scrollToFirstCardOfSegment('low')}
+                        className={cn(
+                          chipBtn,
+                          'px-2 py-0.5 text-risk-low',
+                          selectedOverviewSegment === 'low' ? chipSelected : 'hover:bg-emerald-50/90',
+                          nLow === 0 && 'opacity-40 cursor-not-allowed'
+                        )}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-risk-low shrink-0" />
+                        {nLow}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={nRec === 0}
+                        title="定位到第一条仅识别"
+                        onClick={() => scrollToFirstCardOfSegment('recognition_only')}
+                        className={cn(
+                          chipBtn,
+                          'px-2 py-0.5 text-slate-600 border-l border-surface-200 pl-2 ml-0.5',
+                          selectedOverviewSegment === 'recognition_only' ? chipSelected : 'hover:bg-slate-100',
+                          nRec === 0 && 'opacity-40 cursor-not-allowed'
+                        )}
+                      >
+                        <ScanSearch className="w-3 h-3 shrink-0" /> 仅识别 {nRec}
+                      </button>
+                    </>
+                  );
+                })()}
               </div>
+            </div>
 
-              {/* 风险卡片列表 */}
-              <div className="space-y-4">
+            {/* 风险卡片列表 */}
+            <div className="px-5 pb-5 pt-4 space-y-4">
                 {sortedRiskItems.map((item) => {
                     const clauseActive =
                       item.recognitionClauses?.some((c) => c.locationId === activeRiskId) ?? false;
@@ -829,7 +1033,8 @@ function ReviewerPage() {
                         key={item.id}
                         id={`risk-card-${item.id}`}
                         className={cn(
-                          'border rounded-lg overflow-hidden transition-all duration-200 scroll-mt-4',
+                          'border rounded-lg overflow-hidden transition-all duration-200 scroll-mt-24',
+                          !isRecognition && item.ignored && 'opacity-[0.92] border-dashed border-surface-300 bg-surface-50/30',
                           isActive
                             ? `${categoryMeta.border} shadow-md ring-1 ${ringClass}`
                             : `border-surface-200 ${hoverBorderClass}`
@@ -889,32 +1094,67 @@ function ReviewerPage() {
                             </div>
                           ) : (
                             <div className="flex flex-wrap items-center gap-2 shrink-0 justify-end">
-                              <button
-                                type="button"
-                                disabled={item.isAccepted}
-                                onClick={() => handleAcceptRisk(item.id)}
-                                className={cn(
-                                  'px-2 py-1 text-xs font-medium rounded-md border',
-                                  item.isAccepted
-                                    ? 'bg-green-50 text-green-700 border-green-200 cursor-default'
-                                    : 'bg-white text-green-600 border-green-200 hover:bg-green-50'
+                              <StructuredReviewStatusBadge
+                                ignored={item.ignored}
+                                isAccepted={item.isAccepted}
+                                acceptedAfterEdit={item.acceptedAfterEdit}
+                              />
+                              <div className="flex flex-wrap items-center gap-1.5 justify-end">
+                                {item.ignored ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCancelIgnore(item.id)}
+                                    className={structuredActionBtn}
+                                  >
+                                    取消忽略
+                                  </button>
+                                ) : item.isAccepted ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCancelAccept(item.id)}
+                                      className={structuredActionBtn}
+                                    >
+                                      取消确认
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleIgnoreRisk(item.id)}
+                                      className={structuredActionBtn}
+                                    >
+                                      忽略
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    {!isReviewDirty(item) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleAcceptRisk(item.id)}
+                                        className={structuredPrimaryActionBtn}
+                                      >
+                                        采纳
+                                      </button>
+                                    )}
+                                    {isReviewDirty(item) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleAcceptRisk(item.id)}
+                                        className={structuredPrimaryActionBtn}
+                                      >
+                                        确认
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleIgnoreRisk(item.id)}
+                                      className={structuredActionBtn}
+                                    >
+                                      忽略
+                                    </button>
+                                  </>
                                 )}
-                              >
-                                {item.isAccepted
-                                  ? item.acceptedAfterEdit
-                                    ? '已确认'
-                                    : '已采纳'
-                                  : isReviewDirty(item)
-                                    ? '确认'
-                                    : '采纳'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleIgnoreRisk(item.id)}
-                                className="px-2 py-1 text-xs font-medium rounded-md border bg-white text-surface-600 border-surface-300 hover:bg-surface-100"
-                              >
-                                忽略
-                              </button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -943,10 +1183,10 @@ function ReviewerPage() {
                                   );
                                 }}
                                 rows={4}
-                                readOnly={item.isAccepted}
+                                readOnly={item.isAccepted || item.ignored}
                                 className={cn(
                                   'w-full rounded-lg bg-surface-50 px-3 py-2 text-sm text-surface-900 leading-relaxed border border-surface-200 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-400 resize-y min-h-[88px]',
-                                  item.isAccepted && 'bg-surface-100/80 cursor-not-allowed text-surface-600'
+                                  (item.isAccepted || item.ignored) && 'bg-surface-100/80 cursor-not-allowed text-surface-600'
                                 )}
                               />
 
@@ -1048,7 +1288,7 @@ function ReviewerPage() {
                                       </div>
                                       <input
                                         value={field.value}
-                                        readOnly={item.isAccepted}
+                                        readOnly={item.isAccepted || item.ignored}
                                         onChange={(e) => {
                                           setRiskItems((prev) =>
                                             prev.map((prevItem) =>
@@ -1065,7 +1305,7 @@ function ReviewerPage() {
                                         }}
                                         className={cn(
                                           'w-full px-2 py-1 border border-surface-200 rounded-sm text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/20',
-                                          item.isAccepted && 'bg-surface-100/80 text-surface-600 cursor-not-allowed'
+                                          (item.isAccepted || item.ignored) && 'bg-surface-100/80 text-surface-600 cursor-not-allowed'
                                         )}
                                       />
                                     </div>
@@ -1078,9 +1318,8 @@ function ReviewerPage() {
                       </div>
                     );
                   })}
-              </div>
             </div>
-            
+
             {/* 留出底部空间给固定的审核操作区 */}
             <div className={cn("transition-all duration-300", isOpinionExpanded ? "h-64" : "h-20")}></div>
           </div>
