@@ -42,7 +42,9 @@ export default function AdminLayout() {
         <div className="p-4 flex-1">
           <nav className="space-y-1.5 mt-2">
             {navigation.map((item) => {
-              const isActive = location.pathname === item.href;
+              const isActive = item.href === '/admin'
+                ? location.pathname === '/admin'
+                : location.pathname.startsWith(item.href);
               return (
                 <Link
                   key={item.name}

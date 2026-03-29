@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, FileText, AlertTriangle, CheckCircle2, Info, ArrowUpRight, Search, LayoutTemplate, ChevronUp, ChevronDown, Download } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { ChevronLeft, FileText, AlertTriangle, CheckCircle2, Info, Search, LayoutTemplate, ChevronUp, ChevronDown, Download, ThumbsUp, ThumbsDown, ScanSearch } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { exportElementToSvg } from '../utils/exportSvg';
@@ -10,16 +10,35 @@ export function cn(...inputs: ClassValue[]) {
 
 type RiskCategory = 'trigger' | 'missing' | 'low';
 
-interface StructuredField {
+/** bpm_structured：参与审核点结构化回传；recognition_only：仅识别展示，不回传 BPM 结构化字段 */
+export type RuleMode = 'bpm_structured' | 'recognition_only';
+
+export interface StructuredField {
   id: string;
   label: string;
   value: string;
   sourceText?: string;
   locationId?: string;
+  /** 仅当 ruleMode === bpm_structured 时，采纳后用于 BPM 回传 */
   confirmed?: boolean;
 }
 
-interface RiskItem {
+/** 仅识别：一条业务对象下可有多处原文摘录，章节文案可点击定位左侧合同 */
+export interface RecognitionClauseItem {
+  id: string;
+  /** 业务对象/主题；可与 valueSummary 组成首行「主题：摘要」 */
+  topic?: string;
+  /** 与 topic 组合为「运输方式：公路运输」；同主题后续条可省略 */
+  valueSummary?: string;
+  /** 展示为可点击锚点，如「第3章第2节」 */
+  anchorLabel: string;
+  /** 与左侧合同 DOM id 一致 */
+  locationId: string;
+  /** 该章节下的摘录正文 */
+  excerpt: string;
+}
+
+export interface RiskItem {
   id: string;
   title: string;
   summary: string;
@@ -30,8 +49,32 @@ interface RiskItem {
   category: RiskCategory;
   quote?: string;
   locationId?: string;
+  ruleMode: RuleMode;
+  /** 结构化审核：采纳/确认后参与 BPM；仅识别模式不使用 */
   isAccepted?: boolean;
+  /** 为 true 表示用户曾在编辑后点击「确认」（与「采纳」提交效果一致，仅文案区分） */
+  acceptedAfterEdit?: boolean;
+  /** 仅识别：赞/踩反馈，不参与 BPM 结构化回传 */
+  recognitionFeedback?: 'up' | 'down' | null;
   structuredFields: StructuredField[];
+  /** 仅识别：按业务对象列举摘录（优先于 structuredFields 展示） */
+  recognitionClauses?: RecognitionClauseItem[];
+}
+
+/** 汇总智能评审在结果中引用过的段落 id（与左侧合同 DOM id 对齐） */
+function collectReferencedLocationIds(items: RiskItem[]): Set<string> {
+  const s = new Set<string>();
+  for (const item of items) {
+    if (item.locationId) s.add(item.locationId);
+    if (item.reasonLocationId) s.add(item.reasonLocationId);
+    for (const f of item.structuredFields) {
+      if (f.locationId) s.add(f.locationId);
+    }
+    item.recognitionClauses?.forEach((c) => {
+      if (c.locationId) s.add(c.locationId);
+    });
+  }
+  return s;
 }
 
 function ReviewerPage() {
@@ -66,14 +109,15 @@ function ReviewerPage() {
           confirmed: false,
         },
       ],
+      ruleMode: 'bpm_structured',
       isAccepted: false,
     },
     {
       id: 'risk-2',
       title: '质保期要求',
       summary: '没有支持判断的原文依据',
-      details: '合同中未明确约定质保期条款，无法判断是否满足规则中的12个月要求。',
-      conclusion: '合同中缺少质保期信息，判定信息缺失。',
+      details: '',
+      conclusion: '合同中未明确约定质保期条款，无法判断是否满足规则中的12个月要求。',
       reason: '合同全文未找到质保期条款（如第5条/第6条），无法用原文确认是否符合12个月要求。',
       category: 'missing',
       structuredFields: [
@@ -84,6 +128,7 @@ function ReviewerPage() {
           confirmed: false,
         },
       ],
+      ruleMode: 'bpm_structured',
       isAccepted: false,
     },
     {
@@ -107,6 +152,7 @@ function ReviewerPage() {
           confirmed: false,
         },
       ],
+      ruleMode: 'bpm_structured',
       isAccepted: false,
     },
     {
@@ -120,6 +166,7 @@ function ReviewerPage() {
       category: 'trigger',
       quote: '5.1 卖方未能按期交货，每逾期一日应支付逾期交货部分货款的千分之五。',
       locationId: 'risk-4',
+      ruleMode: 'bpm_structured',
       isAccepted: false,
       structuredFields: [
         {
@@ -132,7 +179,61 @@ function ReviewerPage() {
         },
       ],
     },
+    {
+      id: 'risk-5',
+      title: '检验与试验不合格处罚（仅识别）',
+      summary: '合同侧信息已提取',
+      details: '本规则仅做识别展示，不生成审核点结构化回传；主数据或标准比对需人工进行。',
+      conclusion:
+        '已定位与「到货检验、送样试验不合格」相关的处罚约定，请以识别摘录为准核对；不向 BPM 回传本项结构化字段。',
+      reason: '下列条款摘自合同正文，章节链接可跳转左侧原文（本项为仅识别）。',
+      category: 'low',
+      ruleMode: 'recognition_only',
+      recognitionFeedback: null,
+      structuredFields: [],
+      recognitionClauses: [
+        {
+          id: 'rc-5-1',
+          topic: '国网对产品到货检验、送样试验等不合格的处罚条款',
+          anchorLabel: '第3章第2节',
+          locationId: 'rec-sgw-c3s2',
+          excerpt:
+            '买方有权对合同设备进行到货检验或送样试验；结果不合格的，卖方应在收到通知之日起15日内免费更换或补足，并承担相关费用。',
+        },
+        {
+          id: 'rc-5-2',
+          anchorLabel: '第4章第3节',
+          locationId: 'rec-sgw-c4s3',
+          excerpt:
+            '同一缺陷经两次整改仍不合格的，买方有权解除合同，并可要求卖方支付合同总额20%的违约金。',
+        },
+      ],
+    },
+    {
+      id: 'risk-6',
+      title: '运输方式（仅识别）',
+      summary: '合同侧信息已提取',
+      details: '本规则仅做识别展示，不向 BPM 回传结构化评审字段。',
+      conclusion: '识别结果：合同约定设备由卖方负责公路运输至项目现场。',
+      reason: '运输方式条款见下文摘录（仅识别）。',
+      category: 'low',
+      ruleMode: 'recognition_only',
+      recognitionFeedback: null,
+      structuredFields: [],
+      recognitionClauses: [
+        {
+          id: 'rc-6-1',
+          topic: '运输方式',
+          valueSummary: '公路运输',
+          anchorLabel: '第2章第1节',
+          locationId: 'rec-trans-c2s1',
+          excerpt: '设备运输由卖方负责，采用公路运输方式运至买方指定的项目现场。',
+        },
+      ],
+    },
   ]);
+
+  const referencedLocationIds = useMemo(() => collectReferencedLocationIds(riskItems), [riskItems]);
 
   // 审核意见相关状态
   const [opinionText, setOpinionText] = useState('');
@@ -141,34 +242,73 @@ function ReviewerPage() {
   const lastScrollTop = useRef(0);
   const pageRef = useRef<HTMLDivElement>(null);
 
-  const handleAcceptRisk = (item: RiskItem) => {
+  /** 各卡片「智能审核原文案」基线，用于判断用户是否编辑过结论文案或评审要点 */
+  const reviewBaselinesRef = useRef<Record<string, { mergedConclusion: string; fields: Record<string, string> }>>({});
+
+  /** 审核结论区展示为一段总结：结论与补充说明用空格衔接，避免出现空行分段 */
+  const getMergedConclusionText = (item: RiskItem) =>
+    [item.conclusion, item.details]
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .join(' ');
+
+  const ensureReviewBaseline = (item: RiskItem) => {
+    if (!reviewBaselinesRef.current[item.id]) {
+      reviewBaselinesRef.current[item.id] = {
+        mergedConclusion: getMergedConclusionText(item),
+        fields: Object.fromEntries(item.structuredFields.map((f) => [f.id, f.value])),
+      };
+    }
+  };
+
+  const isReviewDirty = (item: RiskItem): boolean => {
+    if (item.ruleMode !== 'bpm_structured') return false;
+    ensureReviewBaseline(item);
+    const b = reviewBaselinesRef.current[item.id]!;
+    if (getMergedConclusionText(item) !== b.mergedConclusion) return true;
+    return item.structuredFields.some((f) => f.value !== b.fields[f.id]);
+  };
+
+  const updateReviewBaseline = (item: RiskItem) => {
+    reviewBaselinesRef.current[item.id] = {
+      mergedConclusion: getMergedConclusionText(item),
+      fields: Object.fromEntries(item.structuredFields.map((f) => [f.id, f.value])),
+    };
+  };
+
+  const handleAcceptRisk = (itemId: string) => {
+    const item = riskItems.find((r) => r.id === itemId);
+    if (!item || item.ruleMode !== 'bpm_structured') return;
+
+    const wasDirty = isReviewDirty(item);
+    const merged = getMergedConclusionText(item).trim();
+    if (merged) {
+      setOpinionText((o) => (o.trim() ? `${o.trim()}\n${merged}` : merged));
+    }
+    updateReviewBaseline(item);
+
     setRiskItems((prev) =>
       prev.map((risk) =>
-        risk.id === item.id
+        risk.id === itemId
           ? {
               ...risk,
               isAccepted: true,
+              acceptedAfterEdit: wasDirty,
               structuredFields: risk.structuredFields.map((field) => ({ ...field, confirmed: true })),
             }
           : risk
       )
     );
-    setOpinionText((prev) => {
-      const addition = `${item.conclusion} ${item.reason}`;
-      if (!prev.trim()) {
-        return addition;
-      }
-      return `${prev.trim()}\n${addition}`;
-    });
   };
 
   const handleIgnoreRisk = (riskId: string) => {
     setRiskItems((prev) =>
       prev.map((risk) =>
-        risk.id === riskId
+        risk.id === riskId && risk.ruleMode === 'bpm_structured'
           ? {
               ...risk,
               isAccepted: false,
+              acceptedAfterEdit: false,
               structuredFields: risk.structuredFields.map((field) => ({ ...field, confirmed: false })),
             }
           : risk
@@ -176,18 +316,36 @@ function ReviewerPage() {
     );
   };
 
+  const handleRecognitionFeedback = (riskId: string, feedback: 'up' | 'down' | null) => {
+    setRiskItems((prev) =>
+      prev.map((risk) =>
+        risk.id === riskId && risk.ruleMode === 'recognition_only'
+          ? { ...risk, recognitionFeedback: feedback }
+          : risk
+      )
+    );
+  };
+
   const handleSubmit = () => {
-    const accepted = riskItems.filter((risk) => risk.isAccepted);
-    const confirmedFields = riskItems.flatMap((risk) =>
+    const structuredRisks = riskItems.filter((r) => r.ruleMode === 'bpm_structured');
+    const accepted = structuredRisks.filter((risk) => risk.isAccepted);
+    const confirmedFields = structuredRisks.flatMap((risk) =>
       risk.structuredFields
         .filter((field) => field.confirmed)
         .map((field) => ({ ...field, riskId: risk.id }))
     );
 
+    const recognitionFeedbackLog = riskItems
+      .filter((r) => r.ruleMode === 'recognition_only' && r.recognitionFeedback)
+      .map((r) => ({ riskId: r.id, title: r.title, feedback: r.recognitionFeedback }));
+
     const payload = {
       opinion: opinionText,
+      /** 仅含需 BPM 结构化回传的项 */
       acceptedRisks: accepted,
       confirmedFields,
+      /** 赞/踩仅作体验反馈记录，不写入审核点结构化字段 */
+      recognitionFeedback: recognitionFeedbackLog,
     };
 
     console.log('提交至BPM payload:', payload);
@@ -257,6 +415,31 @@ function ReviewerPage() {
     };
   }, [isOpinionExpanded]);
 
+  const sortedRiskItems = useMemo(() => {
+    return riskItems.slice().sort((a, b) => {
+      const modeRank = (x: RiskItem) => (x.ruleMode === 'bpm_structured' ? 0 : 1);
+      if (modeRank(a) !== modeRank(b)) return modeRank(a) - modeRank(b);
+      const order: RiskCategory[] = ['trigger', 'missing', 'low'];
+      return order.indexOf(a.category) - order.indexOf(b.category);
+    });
+  }, [riskItems]);
+
+  /** 点击统计区：滚动右侧列表到该类型第一条卡片（与列表排序一致） */
+  const scrollToFirstCardOfSegment = (segment: 'trigger' | 'missing' | 'low' | 'recognition_only') => {
+    const first = sortedRiskItems.find((item) => {
+      if (segment === 'recognition_only') return item.ruleMode === 'recognition_only';
+      return item.ruleMode === 'bpm_structured' && item.category === segment;
+    });
+    if (!first) return;
+    setActiveRiskId(first.id);
+    requestAnimationFrame(() => {
+      document.getElementById(`risk-card-${first.id}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    });
+  };
+
   // 定位到对应的风险原文
   const scrollToRisk = (riskId: string) => {
     setActiveRiskId(riskId);
@@ -278,7 +461,32 @@ function ReviewerPage() {
       }
     }, 50);
   };
-  
+
+  /** 左侧段落：当前定位 = 彩色强高亮；仅被引用 = 浅黄底提示 */
+  const citeBlockClass = (blockId: string, activeTone: 'slate' | 'high' | 'low') => {
+    const isRef = referencedLocationIds.has(blockId);
+    const isAct = activeRiskId === blockId;
+    if (isAct) {
+      if (activeTone === 'slate') {
+        return 'bg-slate-100 border-slate-400 shadow-[0_0_0_4px_rgba(148,163,184,0.25)]';
+      }
+      if (activeTone === 'high') {
+        return 'bg-risk-high/10 border-risk-high shadow-[0_0_0_4px_rgba(239,68,68,0.2)]';
+      }
+      return 'bg-risk-low/10 border-risk-low shadow-[0_0_0_4px_rgba(16,185,129,0.2)]';
+    }
+    if (isRef) {
+      return 'bg-amber-50/90 border-amber-200 border-2';
+    }
+    return 'border-transparent';
+  };
+
+  const citeSpanClass = (blockId: string, activeSpanClass: string) => {
+    const isRef = referencedLocationIds.has(blockId);
+    const isAct = activeRiskId === blockId;
+    return cn('font-medium', isAct && activeSpanClass, !isAct && isRef && 'bg-amber-100/90 text-amber-950/90');
+  };
+
   return (
     <div ref={pageRef} className="flex flex-col h-screen bg-surface-50 overflow-hidden">
       {/* 顶部导航栏 */}
@@ -330,12 +538,16 @@ function ReviewerPage() {
               <div className="h-4 w-[1px] bg-surface-300"></div>
               <span className="text-sm">100%</span>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 shrink-0">
               <button className="p-1.5 hover:bg-surface-100 rounded text-surface-600"><Search className="w-4 h-4" /></button>
               <button className="p-1.5 hover:bg-surface-100 rounded text-surface-600"><LayoutTemplate className="w-4 h-4" /></button>
             </div>
           </div>
-          
+          <div className="bg-amber-50/90 border-b border-amber-100 px-4 py-1.5 text-[11px] text-surface-600 leading-snug shrink-0">
+            <span className="font-medium text-amber-900/90">引用高亮：</span>
+            浅黄底为智能评审已引用段落；彩色描边为当前定位。未标注段落请自行复核是否遗漏。
+          </div>
+
           {/* 模拟PDF页面 */}
           <div className="flex-1 bg-surface-100 overflow-y-auto overflow-x-hidden flex justify-center pb-8 rounded-b-lg">
             <div className="w-full max-w-[800px] mt-4 space-y-6">
@@ -355,33 +567,82 @@ function ReviewerPage() {
                 <h3 className="font-bold mb-2 mt-6">第二条 合同金额</h3>
                 <p className="mb-4 indent-8">2.1 本合同总金额为人民币（大写）伍佰万元整（¥5,000,000.00）。该价格包含设备款、包装费、运输费、保险费、安装指导费等全部费用。</p>
 
+                <h3 className="font-bold mb-2 mt-6">第二章 运输与交付准备</h3>
+                <div
+                  id="rec-trans-c2s1"
+                  className={cn('p-3 rounded-md transition-all duration-300 border-2 mb-4', citeBlockClass('rec-trans-c2s1', 'slate'))}
+                >
+                  <p className="font-bold text-sm mb-2">第1节 运输方式</p>
+                  <p className="indent-8 text-sm leading-relaxed">
+                    设备运输由卖方负责，采用
+                    <span className={citeSpanClass('rec-trans-c2s1', 'bg-slate-200/90')}>公路运输</span>
+                    方式运至买方指定的项目现场；运输费用及保险由卖方承担。
+                  </p>
+                </div>
+
+                <h3 className="font-bold mb-2 mt-6">第三章 检验与试验</h3>
+                <div
+                  id="rec-sgw-c3s2"
+                  className={cn('p-3 rounded-md transition-all duration-300 border-2 mb-4', citeBlockClass('rec-sgw-c3s2', 'slate'))}
+                >
+                  <p className="font-bold text-sm mb-2">第2节 到货检验与送样试验</p>
+                  <p className="indent-8 text-sm leading-relaxed">
+                    买方有权依据合同约定对合同设备进行到货检验或送样试验。检验或试验结果
+                    <span className={citeSpanClass('rec-sgw-c3s2', 'bg-slate-200/90')}>不合格的</span>
+                    ，卖方应在收到买方书面通知之日起15日内免费更换、修理或补足，并承担由此产生的运输、装卸等全部费用。
+                  </p>
+                </div>
+
+                <h3 className="font-bold mb-2 mt-6">第四章 违约责任</h3>
+                <div
+                  id="rec-sgw-c4s3"
+                  className={cn('p-3 rounded-md transition-all duration-300 border-2 mb-4', citeBlockClass('rec-sgw-c4s3', 'slate'))}
+                >
+                  <p className="font-bold text-sm mb-2">第3节 质量违约与合同解除</p>
+                  <p className="indent-8 text-sm leading-relaxed">
+                    因卖方原因导致同一缺陷经两次整改仍不合格的，买方有权解除本合同，并可要求卖方支付
+                    <span className={citeSpanClass('rec-sgw-c4s3', 'bg-slate-200/90')}>合同总额20%的违约金</span>
+                    ，违约金不足以弥补损失的，卖方应继续赔偿。
+                  </p>
+                </div>
+
                 <h3 className="font-bold mb-2 mt-6">第三条 交货方式与地点</h3>
-                <div 
+                <div
                   id="risk-1"
-                  className={cn(
-                  "p-2 rounded-md transition-all duration-300 border-2",
-                  activeRiskId === 'risk-1' ? "bg-risk-high/10 border-risk-high shadow-[0_0_0_4px_rgba(239,68,68,0.2)]" : "border-transparent"
-                )}>
-                  <p className="indent-8">3.1 <span className={cn("font-medium", activeRiskId === 'risk-1' && "bg-risk-high/20")}>交货方式：卖方负责将设备交付至指定地点，并承担卸货费用。</span></p>
+                  className={cn('p-2 rounded-md transition-all duration-300 border-2', citeBlockClass('risk-1', 'high'))}
+                >
+                  <p className="indent-8">
+                    3.1{' '}
+                    <span className={citeSpanClass('risk-1', 'bg-risk-high/20')}>
+                      交货方式：卖方负责将设备交付至指定地点，并承担卸货费用。
+                    </span>
+                  </p>
                   <p className="indent-8">3.2 交货地点：买方XX变电站项目现场。</p>
                 </div>
                 
                 <h3 className="font-bold mb-2 mt-6">第四条 付款方式</h3>
-                <div 
+                <div
                   id="risk-3"
-                  className={cn(
-                  "p-2 rounded-md transition-all duration-300 border-2 mt-2",
-                  activeRiskId === 'risk-3' ? "bg-risk-low/10 border-risk-low shadow-[0_0_0_4px_rgba(16,185,129,0.2)]" : "border-transparent"
-                )}>
+                  className={cn('p-2 rounded-md transition-all duration-300 border-2 mt-2', citeBlockClass('risk-3', 'low'))}
+                >
                   <p className="indent-8">4.1 预付款：合同签订后10个工作日内，买方支付合同总价的30%作为预付款。</p>
                   <p className="indent-8">4.2 发货款：设备生产完毕发货前，买方支付合同总价的30%。</p>
-                  <p className="indent-8">4.3 到货款：设备到达现场并验收合格后，买方<span className={cn("font-medium", activeRiskId === 'risk-3' && "bg-risk-low/20")}>应通过电汇或6个月内到期的银行承兑汇票支付货款</span>（合同总价的30%）。</p>
+                  <p className="indent-8">
+                    4.3 到货款：设备到达现场并验收合格后，买方
+                    <span className={citeSpanClass('risk-3', 'bg-risk-low/20')}>应通过电汇或6个月内到期的银行承兑汇票支付货款</span>
+                    （合同总价的30%）。
+                  </p>
                 </div>
 
                 {/* 因为展示滚动效果，增加一些占位的长文本让页面可滚动 */}
                 <h3 className="font-bold mb-2 mt-6">第五条 违约责任</h3>
                 <div className="p-2 border-2 border-transparent">
-                  <p className="indent-8 mb-2">5.1 卖方未能按期交货的，每逾期一日，应向买方支付逾期交货部分货款的千分之五作为违约金。</p>
+                  <div id="risk-4" className={cn('-mx-2 px-2 py-1 rounded-md transition-all duration-300 border-2 mb-2', citeBlockClass('risk-4', 'high'))}>
+                    <p className="indent-8">
+                      5.1 卖方未能按期交货的，每逾期一日，应向买方支付逾期交货部分货款的
+                      <span className={citeSpanClass('risk-4', 'bg-risk-high/20')}>千分之五作为违约金</span>。
+                    </p>
+                  </div>
                   <p className="indent-8 mb-2">5.2 买方未能按期付款的，每逾期一日，应向卖方支付逾期付款金额的千分之五作为违约金。</p>
                   <p className="indent-8">5.3 任何一方违反本合同其他约定的，应赔偿因此给守约方造成的全部损失。</p>
                 </div>
@@ -399,7 +660,6 @@ function ReviewerPage() {
                   <p className="indent-8">7.3 本合同未尽事宜，双方可签订补充协议，补充协议与本合同具有同等法律效力。</p>
                 </div>
 
-                {/* 模拟缺物质保期 - 删除左侧占位锚点 */}
               </div>
             </div>
           </div>
@@ -447,54 +707,138 @@ function ReviewerPage() {
                   规则评审结果
                 </h3>
                 
-                {/* 风险概览 Pill */}
-                <div className="flex items-center gap-1.5 text-xs font-medium bg-surface-100 p-1 rounded-full border border-surface-200">
-                  <span className="px-2 py-0.5 bg-white text-risk-high rounded-full shadow-sm flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-risk-high"></span> {riskItems.filter((item) => item.category === 'trigger').length}
-                  </span>
-                  <span className="px-2 py-0.5 text-risk-medium flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-risk-medium"></span> {riskItems.filter((item) => item.category === 'missing').length}
-                  </span>
-                  <span className="px-2 py-0.5 text-risk-low flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-risk-low"></span> {riskItems.filter((item) => item.category === 'low').length}
-                  </span>
+                {/* 风险概览：仅统计需 BPM 结构化回传的项 */}
+                <div className="flex flex-wrap items-center gap-1.5 text-xs font-medium bg-surface-100 p-1 rounded-full border border-surface-200">
+                  {(() => {
+                    const nTrigger = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'trigger').length;
+                    const nMissing = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'missing').length;
+                    const nLow = riskItems.filter((item) => item.ruleMode === 'bpm_structured' && item.category === 'low').length;
+                    const nRec = riskItems.filter((item) => item.ruleMode === 'recognition_only').length;
+                    const chipBtn =
+                      'rounded-full flex items-center gap-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 focus-visible:ring-offset-1';
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          disabled={nTrigger === 0}
+                          title="定位到第一条触发风险"
+                          onClick={() => scrollToFirstCardOfSegment('trigger')}
+                          className={cn(
+                            chipBtn,
+                            'px-2 py-0.5 bg-white text-risk-high shadow-sm',
+                            nTrigger === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-50 cursor-pointer'
+                          )}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-risk-high shrink-0" />
+                          {nTrigger}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={nMissing === 0}
+                          title="定位到第一条信息缺失"
+                          onClick={() => scrollToFirstCardOfSegment('missing')}
+                          className={cn(
+                            chipBtn,
+                            'px-2 py-0.5 text-risk-medium',
+                            nMissing === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-amber-50 cursor-pointer'
+                          )}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-risk-medium shrink-0" />
+                          {nMissing}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={nLow === 0}
+                          title="定位到第一条低风险"
+                          onClick={() => scrollToFirstCardOfSegment('low')}
+                          className={cn(
+                            chipBtn,
+                            'px-2 py-0.5 text-risk-low',
+                            nLow === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-emerald-50 cursor-pointer'
+                          )}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-risk-low shrink-0" />
+                          {nLow}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={nRec === 0}
+                          title="定位到第一条仅识别"
+                          onClick={() => scrollToFirstCardOfSegment('recognition_only')}
+                          className={cn(
+                            chipBtn,
+                            'px-2 py-0.5 text-slate-600 border-l border-surface-200 pl-2 ml-0.5',
+                            nRec === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-100 cursor-pointer'
+                          )}
+                        >
+                          <ScanSearch className="w-3 h-3 shrink-0" /> 仅识别 {nRec}
+                        </button>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
 
               {/* 风险卡片列表 */}
               <div className="space-y-4">
-                {riskItems
-                  .slice()
-                  .sort((a, b) => {
-                    const order: RiskCategory[] = ['trigger', 'missing', 'low'];
-                    return order.indexOf(a.category) - order.indexOf(b.category);
-                  })
-                  .map((item) => {
-                    const isActive = activeRiskId === item.id;
-                    const categoryMeta = {
+                {sortedRiskItems.map((item) => {
+                    const clauseActive =
+                      item.recognitionClauses?.some((c) => c.locationId === activeRiskId) ?? false;
+                    const isActive = activeRiskId === item.id || clauseActive;
+                    const isRecognition = item.ruleMode === 'recognition_only';
+
+                    const structuredMeta = {
                       trigger: { bg: 'bg-risk-high/5', border: 'border-risk-high', text: 'text-risk-high', icon: <AlertTriangle className="w-3.5 h-3.5" /> },
                       missing: { bg: 'bg-risk-medium/5', border: 'border-risk-medium', text: 'text-risk-medium', icon: <Info className="w-3.5 h-3.5" /> },
                       low: { bg: 'bg-risk-low/5', border: 'border-risk-low', text: 'text-risk-low', icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
                     }[item.category];
 
-                    const categoryLabel = item.category === 'trigger' ? '触发风险' : item.category === 'missing' ? '信息缺失' : '低风险';
-                    const hoverBorderClass = item.category === 'trigger' ? 'hover:border-risk-high/50' : item.category === 'missing' ? 'hover:border-risk-medium/50' : 'hover:border-risk-low/50';
-                    const ringClass = item.category === 'trigger' ? 'ring-risk-high/20' : item.category === 'missing' ? 'ring-risk-medium/20' : 'ring-risk-low/20';
+                    const categoryMeta = isRecognition
+                      ? {
+                          bg: 'bg-slate-50',
+                          border: 'border-slate-300',
+                          text: 'text-slate-600',
+                          icon: <ScanSearch className="w-3.5 h-3.5" />,
+                        }
+                      : structuredMeta;
+
+                    const categoryLabel = isRecognition
+                      ? '仅识别'
+                      : item.category === 'trigger'
+                        ? '触发风险'
+                        : item.category === 'missing'
+                          ? '信息缺失'
+                          : '低风险';
+                    const hoverBorderClass = isRecognition
+                      ? 'hover:border-slate-300/80'
+                      : item.category === 'trigger'
+                        ? 'hover:border-risk-high/50'
+                        : item.category === 'missing'
+                          ? 'hover:border-risk-medium/50'
+                          : 'hover:border-risk-low/50';
+                    const ringClass = isRecognition
+                      ? 'ring-slate-200/80'
+                      : item.category === 'trigger'
+                        ? 'ring-risk-high/20'
+                        : item.category === 'missing'
+                          ? 'ring-risk-medium/20'
+                          : 'ring-risk-low/20';
 
                     return (
                       <div
                         key={item.id}
+                        id={`risk-card-${item.id}`}
                         className={cn(
-                          'border rounded-lg overflow-hidden transition-all duration-200',
+                          'border rounded-lg overflow-hidden transition-all duration-200 scroll-mt-4',
                           isActive
                             ? `${categoryMeta.border} shadow-md ring-1 ${ringClass}`
                             : `border-surface-200 ${hoverBorderClass}`
                         )}
                       >
-                        <div className={cn(categoryMeta.bg, 'p-3 border-b border-surface-100 flex items-start justify-between')}>
-                          <div className="flex items-start gap-2">
-                            <div className={cn('mt-0.5 p-1 rounded-full', categoryMeta.bg, categoryMeta.text)}>{categoryMeta.icon}</div>
-                            <div>
+                        <div className={cn(categoryMeta.bg, 'p-3 border-b border-surface-100 flex items-start justify-between gap-2')}>
+                          <div className="flex items-start gap-2 min-w-0">
+                            <div className={cn('mt-0.5 p-1 rounded-full shrink-0', categoryMeta.bg, categoryMeta.text)}>{categoryMeta.icon}</div>
+                            <div className="min-w-0">
                               <h4 className="text-sm font-semibold text-surface-900">{item.title}</h4>
                               <p className={cn('text-xs font-medium mt-0.5', categoryMeta.text)}>
                                 {categoryLabel}：{item.summary}
@@ -502,103 +846,234 @@ function ReviewerPage() {
                             </div>
                           </div>
 
-                          <div className="mt-3 flex items-center gap-2">
-                            <button
-                              onClick={() => handleAcceptRisk(item)}
-                              className={cn(
-                                'px-2 py-1 text-xs font-medium rounded-md border',
-                                item.isAccepted
-                                  ? 'bg-green-50 text-green-700 border-green-200'
-                                  : 'bg-white text-green-600 border-green-200 hover:bg-green-50'
+                          {isRecognition ? (
+                            <div className="flex flex-col items-end gap-1 shrink-0">
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleRecognitionFeedback(item.id, item.recognitionFeedback === 'up' ? null : 'up')
+                                  }
+                                  className={cn(
+                                    'p-1.5 rounded-md border transition-colors',
+                                    item.recognitionFeedback === 'up'
+                                      ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                      : 'bg-white text-surface-500 border-surface-200 hover:bg-surface-50'
+                                  )}
+                                  title="赞"
+                                >
+                                  <ThumbsUp className="w-4 h-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleRecognitionFeedback(item.id, item.recognitionFeedback === 'down' ? null : 'down')
+                                  }
+                                  className={cn(
+                                    'p-1.5 rounded-md border transition-colors',
+                                    item.recognitionFeedback === 'down'
+                                      ? 'bg-orange-50 text-orange-800 border-orange-200'
+                                      : 'bg-white text-surface-500 border-surface-200 hover:bg-surface-50'
+                                  )}
+                                  title="踩"
+                                >
+                                  <ThumbsDown className="w-4 h-4" />
+                                </button>
+                              </div>
+                              {item.recognitionFeedback === 'up' && (
+                                <span className="text-[10px] text-blue-600 font-medium">已赞</span>
                               )}
-                            >
-                              采纳
-                            </button>
-                            <button
-                              onClick={() => handleIgnoreRisk(item.id)}
-                              className="px-2 py-1 text-xs font-medium rounded-md border bg-white text-surface-600 border-surface-300 hover:bg-surface-100"
-                            >
-                              忽略
-                            </button>
-                            {item.isAccepted && (
-                              <span className="text-xs text-green-600 font-medium">已采纳</span>
-                            )}
-                          </div>
+                              {item.recognitionFeedback === 'down' && (
+                                <span className="text-[10px] text-orange-700 font-medium">已踩</span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-center gap-2 shrink-0 justify-end">
+                              <button
+                                type="button"
+                                disabled={item.isAccepted}
+                                onClick={() => handleAcceptRisk(item.id)}
+                                className={cn(
+                                  'px-2 py-1 text-xs font-medium rounded-md border',
+                                  item.isAccepted
+                                    ? 'bg-green-50 text-green-700 border-green-200 cursor-default'
+                                    : 'bg-white text-green-600 border-green-200 hover:bg-green-50'
+                                )}
+                              >
+                                {item.isAccepted
+                                  ? item.acceptedAfterEdit
+                                    ? '已确认'
+                                    : '已采纳'
+                                  : isReviewDirty(item)
+                                    ? '确认'
+                                    : '采纳'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleIgnoreRisk(item.id)}
+                                className="px-2 py-1 text-xs font-medium rounded-md border bg-white text-surface-600 border-surface-300 hover:bg-surface-100"
+                              >
+                                忽略
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         <div className="p-3 bg-white space-y-4 border border-surface-200 rounded-lg shadow-sm">
-                          <div className="text-xs font-semibold text-surface-500 uppercase tracking-wider">审核结论</div>
-                          <div className="rounded-lg bg-surface-50 px-3 py-2 text-sm text-surface-900 leading-relaxed">
-                            {item.conclusion} {item.details}
-                          </div>
+                          {isRecognition && (
+                            <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 leading-relaxed">
+                              已提取识别结果供参考；<span className="font-semibold">不向 BPM 回传审核点结构化字段</span>。
+                              主数据核对需人工进行。
+                            </p>
+                          )}
 
-                          <div className="text-xs font-semibold text-surface-500 uppercase tracking-wider">结论原因</div>
-                          <div className="rounded-lg bg-surface-50 px-3 py-2 text-sm text-surface-500">
-                            {(() => {
-                              const reasonMatch = item.reason.match(/第\d+条第\d+\.\d+款/);
-                              if (!reasonMatch) {
-                                return <span>{item.reason}</span>;
-                              }
-                              const [before, after] = item.reason.split(reasonMatch[0]);
-                              return (
-                                <span>
-                                  {before}
-                                  <button
-                                    onClick={() => scrollToRisk(item.reasonLocationId || item.id)}
-                                    className="text-primary-600 hover:text-primary-700 underline"
-                                  >
-                                    {reasonMatch[0]}
-                                  </button>
-                                  {after}
-                                </span>
-                              );
-                            })()}
-                          </div>
+                          {!isRecognition && (
+                            <>
+                              <div className="text-xs font-semibold text-surface-500 uppercase tracking-wider">
+                                审核结论
+                              </div>
+                              <textarea
+                                value={getMergedConclusionText(item)}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setRiskItems((prev) =>
+                                    prev.map((r) =>
+                                      r.id === item.id ? { ...r, conclusion: v, details: '' } : r
+                                    )
+                                  );
+                                }}
+                                rows={4}
+                                readOnly={item.isAccepted}
+                                className={cn(
+                                  'w-full rounded-lg bg-surface-50 px-3 py-2 text-sm text-surface-900 leading-relaxed border border-surface-200 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-400 resize-y min-h-[88px]',
+                                  item.isAccepted && 'bg-surface-100/80 cursor-not-allowed text-surface-600'
+                                )}
+                              />
 
-                          {/* 结构化字段 */}
-                          <div className="bg-surface-50 p-3 rounded-md border border-surface-200">
-                            <h5 className="text-xs font-semibold text-surface-600 mb-2">评审要点提取</h5>
-                            <div className="space-y-2">
-                              {item.structuredFields.map((field) => (
-                                <div key={field.id} className="flex flex-col gap-1">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-xs text-surface-500">{field.label}</span>
-                                      {field.confirmed && (
-                                        <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-0.5 rounded-full border border-green-200">
-                                          已确认
-                                        </span>
+                              <div className="text-xs font-semibold text-surface-500 uppercase tracking-wider">
+                                结论原因
+                              </div>
+                              <div className="rounded-lg bg-surface-50 px-3 py-2 text-sm text-surface-500">
+                                {(() => {
+                                  const reasonMatch = item.reason.match(/第\d+条第\d+\.\d+款/);
+                                  if (!reasonMatch) {
+                                    return <span>{item.reason}</span>;
+                                  }
+                                  const [before, after] = item.reason.split(reasonMatch[0]);
+                                  return (
+                                    <span>
+                                      {before}
+                                      <button
+                                        type="button"
+                                        onClick={() => scrollToRisk(item.reasonLocationId || item.id)}
+                                        className="text-primary-600 hover:text-primary-700 underline"
+                                      >
+                                        {reasonMatch[0]}
+                                      </button>
+                                      {after}
+                                    </span>
+                                  );
+                                })()}
+                              </div>
+                            </>
+                          )}
+
+                          {isRecognition && item.recognitionClauses && item.recognitionClauses.length > 0 ? (
+                            <div className="bg-slate-50/80 p-3 rounded-md border border-slate-200">
+                              <h5 className="text-xs font-semibold text-slate-700 mb-3">识别结果</h5>
+                              <ul className="space-y-4 list-none m-0 p-0">
+                                {item.recognitionClauses.map((clause, cIdx) => {
+                                  const prev = cIdx > 0 ? item.recognitionClauses![cIdx - 1] : undefined;
+                                  const topicChanged = !!clause.topic && clause.topic !== prev?.topic;
+                                  const showResultLine =
+                                    (clause.topic && clause.valueSummary) ||
+                                    (topicChanged && clause.topic && !clause.valueSummary) ||
+                                    (!clause.topic && !!clause.valueSummary);
+                                  return (
+                                    <li key={clause.id} className="text-sm leading-relaxed">
+                                      {showResultLine && (
+                                        <p className="text-surface-900 font-medium mb-1.5">
+                                          {clause.topic && clause.valueSummary
+                                            ? `${clause.topic}：${clause.valueSummary}`
+                                            : clause.topic
+                                              ? clause.topic
+                                              : clause.valueSummary}
+                                        </p>
                                       )}
-                                    </div>
-                                    <button
-                                      onClick={() => field.locationId ? scrollToRisk(field.locationId) : undefined}
-                                      className="text-xs text-primary-600 hover:text-primary-700"
-                                    >
-                                      定位原文
-                                    </button>
-                                  </div>
-                                  <input
-                                    value={field.value}
-                                    onChange={(e) => {
-                                      setRiskItems((prev) =>
-                                        prev.map((prevItem) =>
-                                          prevItem.id === item.id
-                                            ? {
-                                                ...prevItem,
-                                                structuredFields: prevItem.structuredFields.map((p) =>
-                                                  p.id === field.id ? { ...p, value: e.target.value } : p
-                                                ),
-                                              }
-                                            : prevItem
-                                        )
-                                      );
-                                    }}
-                                    className="w-full px-2 py-1 border border-surface-200 rounded-sm text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/20"
-                                  />
-                                </div>
-                              ))}
+                                      <p className="text-surface-700">
+                                        <span className="text-surface-600">原文</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => scrollToRisk(clause.locationId)}
+                                          className={cn(
+                                            'font-medium text-primary-600 hover:text-primary-800 underline underline-offset-2 decoration-primary-400/80'
+                                          )}
+                                        >
+                                          {clause.anchorLabel}
+                                        </button>
+                                        <span className="text-surface-800">「{clause.excerpt}」</span>
+                                      </p>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
                             </div>
-                          </div>
+                          ) : (
+                            item.structuredFields.length > 0 && (
+                              <div className="bg-surface-50 p-3 rounded-md border border-surface-200">
+                                <h5 className="text-xs font-semibold text-surface-600 mb-2">评审要点提取</h5>
+                                <div className="space-y-2">
+                                  {item.structuredFields.map((field) => (
+                                    <div key={field.id} className="flex flex-col gap-1">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-xs text-surface-500">{field.label}</span>
+                                          {field.confirmed && (
+                                            <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-0.5 rounded-full border border-green-200">
+                                              已确认
+                                            </span>
+                                          )}
+                                        </div>
+                                        {field.locationId ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => scrollToRisk(field.locationId!)}
+                                            className="text-xs text-primary-600 hover:text-primary-700"
+                                          >
+                                            定位原文
+                                          </button>
+                                        ) : (
+                                          <span className="text-[10px] text-surface-400">—</span>
+                                        )}
+                                      </div>
+                                      <input
+                                        value={field.value}
+                                        readOnly={item.isAccepted}
+                                        onChange={(e) => {
+                                          setRiskItems((prev) =>
+                                            prev.map((prevItem) =>
+                                              prevItem.id === item.id
+                                                ? {
+                                                    ...prevItem,
+                                                    structuredFields: prevItem.structuredFields.map((p) =>
+                                                      p.id === field.id ? { ...p, value: e.target.value } : p
+                                                    ),
+                                                  }
+                                                : prevItem
+                                            )
+                                          );
+                                        }}
+                                        className={cn(
+                                          'w-full px-2 py-1 border border-surface-200 rounded-sm text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/20',
+                                          item.isAccepted && 'bg-surface-100/80 text-surface-600 cursor-not-allowed'
+                                        )}
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )
+                          )}
                         </div>
                       </div>
                     );
@@ -682,10 +1157,8 @@ function ReviewerPage() {
                 value={opinionText}
                 onChange={(e) => setOpinionText(e.target.value)}
               ></textarea>
-              <div className="mt-4 flex items-center justify-between">
-                <span className="text-xs text-surface-400 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> 结构化字段将同步提交
-                </span>
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <span className="text-xs text-surface-500 leading-snug">被确认的评审要点信息将和评审意见一同提交</span>
                 <button 
                   onClick={handleSubmit}
                   className={cn(
@@ -696,7 +1169,7 @@ function ReviewerPage() {
                   )}
                   disabled={opinionText.trim().length === 0}
                 >
-                  提交结论并返回 BPM
+                  提交结论并返回
                 </button>
               </div>
             </div>
