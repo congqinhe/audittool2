@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/audittool/static/css/main.09c7d5c4.css",
+    "main.js": "/audittool/static/js/main.71be6c66.js",
+    "static/js/453.407a1c1b.chunk.js": "/audittool/static/js/453.407a1c1b.chunk.js",
+    "index.html": "/audittool/index.html",
+    "main.09c7d5c4.css.map": "/audittool/static/css/main.09c7d5c4.css.map",
+    "main.71be6c66.js.map": "/audittool/static/js/main.71be6c66.js.map",
+    "453.407a1c1b.chunk.js.map": "/audittool/static/js/453.407a1c1b.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.09c7d5c4.css",
+    "static/js/main.71be6c66.js"
+  ]
+}
