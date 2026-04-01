@@ -19,17 +19,12 @@ npm start
 
 ## GitHub Pages 访问
 
-仓库已配置 `package.json` 的 **`homepage`**（当前为 `https://congqinhe.github.io/audittool2`），构建产物会带 **`/audittool`** 子路径；路由使用 **`basename`**，与正式环境一致。
+线上入口：
+- 用户端-合同审核：<https://congqinhe.github.io/audittool2/reviewer>
+- 管理端-数据跟踪：<https://congqinhe.github.io/audittool2/admin>
+- 管理端-规则管理：<https://congqinhe.github.io/audittool2/admin/rules>
+- 管理端-任务进度:<https://congqinhe.github.io/audittool2/admin/tasks>
 
-1. 安装依赖（含发布工具）：`npm install`
-2. 构建（会自动把 `index.html` 复制为 `404.html`，避免刷新子路由 404）：`npm run build`
-3. 发布到 `gh-pages` 分支：`npm run deploy:gh-pages`  
-4. 在 GitHub 仓库 **Settings → Pages** 中，将 **Source** 设为 **`gh-pages` / `(root)`**。
-
-线上入口示例：
-
-- 管理端：<https://congqinhe.github.io/audittool2/admin>
-- 审核页：<https://congqinhe.github.io/audittool2/reviewer>
 
 
 
