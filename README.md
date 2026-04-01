@@ -28,8 +28,8 @@ npm start
 
 线上入口示例：
 
-- 管理端：<https://congqinhe.github.io/audittool/admin>
-- 审核页：<https://congqinhe.github.io/audittool/reviewer>
+- 管理端：<https://congqinhe.github.io/audittool2/admin>
+- 审核页：<https://congqinhe.github.io/audittool2/reviewer>
 
 若仓库名或用户名不同，请修改 `package.json` 里的 **`homepage`** 为 `https://<用户>.github.io/<仓库名>`（不要末尾斜杠）。
 
